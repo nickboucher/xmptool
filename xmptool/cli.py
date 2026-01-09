@@ -126,7 +126,11 @@ def main() -> None:
                 creation_date, from_track = get_creation_date(metadata)
                 content_id = metadata.get('ContentIdentifier')
                 if creation_date:
-                    pair_creation_date = datetime.fromisoformat(creation_date)
+                    try:
+                        pair_creation_date = datetime.fromisoformat(creation_date)
+                    except ValueError:
+                        logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping date.')
+                        pair_creation_date = None
                 else:
                     logger.debug(f'No creation date in paired file {file_path}.')
                 if content_id:
@@ -163,7 +167,12 @@ def main() -> None:
                 creation_date, from_track = get_creation_date(metadata)
                 
                 if creation_date:
-                    file_creation_date = datetime.fromisoformat(creation_date)
+                    try:
+                        file_creation_date = datetime.fromisoformat(creation_date)
+                    except ValueError:
+                        logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping.')
+                        continue
+                    
                     root, ext = splitext(file_path)
                     has_xmp = isfile(f'{file_path}.xmp')
                     should_process = args.force or (args.recalculate and has_xmp) or not has_xmp
