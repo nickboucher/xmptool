@@ -27,18 +27,21 @@ def exif_tool(file_path: str, tags: list) -> dict[str, str]:
     metadata.pop('SourceFile')
     return metadata
 
-def get_track_creation_date(metadata: dict[str, str]) -> tuple[str|None, bool]:
-    """Extract Media Create Date or Track Create Date from video tracks.
+def get_creation_date(metadata: dict[str, str]) -> tuple[str|None, bool]:
+    """Extract creation date from metadata, trying standard fields first, then track-level fields.
     Returns tuple of (date, was_found_in_track)
     """
-    # Try Media Create Date first from any track
-    for key in metadata:
-        if 'MediaCreateDate' in key:
-            return metadata[key], True
-    # Fall back to Track Create Date from any track
-    for key in metadata:
-        if 'TrackCreateDate' in key:
-            return metadata[key], True
+    # Try standard EXIF/XMP dates first
+    creation_date = metadata.get('DateTimeOriginal', metadata.get('CreateDate', metadata.get('DateCreated')))
+    if creation_date:
+        return creation_date, False
+    
+    # Fall back to Media Create Date
+    if 'MediaCreateDate' in metadata:
+        return metadata['MediaCreateDate'], True
+    # Fall back to Track Create Date
+    if 'TrackCreateDate' in metadata:
+        return metadata['TrackCreateDate'], True
     return None, False
 
 def xmp(creation_date: datetime|None, content_id: str|None) -> str:
@@ -118,11 +121,8 @@ def main() -> None:
             from_track = False
             for ext in exts:
                 file_path = f'{file}{ext}'
-                metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MakerNotes:ContentIdentifier', 'Track*:MediaCreateDate', 'Track*:TrackCreateDate'])
-                creation_date = metadata.get('DateTimeOriginal', metadata.get('CreateDate', metadata.get('DateCreated')))
-                if not creation_date:
-                    track_date, from_track = get_track_creation_date(metadata)
-                    creation_date = track_date
+                metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MakerNotes:ContentIdentifier', 'MediaCreateDate', 'TrackCreateDate'])
+                creation_date, from_track = get_creation_date(metadata)
                 content_id = metadata.get('ContentIdentifier')
                 if creation_date:
                     pair_creation_date = datetime.fromisoformat(creation_date)
@@ -157,12 +157,8 @@ def main() -> None:
 
     for file_path in file_paths:
         if file_path not in processed_files:
-            metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'Track*:MediaCreateDate', 'Track*:TrackCreateDate'])
-            creation_date = metadata.get('DateTimeOriginal', metadata.get('CreateDate', metadata.get('DateCreated')))
-            from_track = False
-            if not creation_date:
-                track_date, from_track = get_track_creation_date(metadata)
-                creation_date = track_date
+            metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate'])
+            creation_date, from_track = get_creation_date(metadata)
             
             if creation_date:
                 file_creation_date = datetime.fromisoformat(creation_date)
