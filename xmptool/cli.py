@@ -77,6 +77,7 @@ def main() -> None:
     parser.add_argument('dir', metavar='dir', type=str, help='The directory containing media files.')
     parser.add_argument('-f', '--force', action='store_true', help='Force the creation of XMP files even if they already exist.')
     parser.add_argument('-r', '--recalculate', action='store_true', help='Only regenerate XMP files for media that already has XMP files.')
+    parser.add_argument('-s', '--single-files', action='store_true', help='Process single files (non-Live Photos) to make date/time more discoverable by immich.')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging.')
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug logging.')
     args = parser.parse_args()
@@ -155,30 +156,31 @@ def main() -> None:
                             f.write(xmp(pair_creation_date, pair_content_id))
                         processed_files.append(f'{file}{ext}')
 
-    for file_path in file_paths:
-        if file_path not in processed_files:
-            metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate'])
-            creation_date, from_track = get_creation_date(metadata)
-            
-            if creation_date:
-                file_creation_date = datetime.fromisoformat(creation_date)
-                root, ext = splitext(file_path)
-                has_xmp = isfile(f'{file_path}.xmp')
-                should_process = args.force or (args.recalculate and has_xmp) or not has_xmp
+    if args.single_files:
+        for file_path in file_paths:
+            if file_path not in processed_files:
+                metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate'])
+                creation_date, from_track = get_creation_date(metadata)
                 
-                if not should_process:
-                    logger.warning(f'XMP file already exists for file {file_path}, skipping.')
-                elif args.recalculate and not has_xmp:
-                    logger.debug(f'Skipping {file_path} (no existing XMP file in recalculate mode).')
+                if creation_date:
+                    file_creation_date = datetime.fromisoformat(creation_date)
+                    root, ext = splitext(file_path)
+                    has_xmp = isfile(f'{file_path}.xmp')
+                    should_process = args.force or (args.recalculate and has_xmp) or not has_xmp
+                    
+                    if not should_process:
+                        logger.warning(f'XMP file already exists for file {file_path}, skipping.')
+                    elif args.recalculate and not has_xmp:
+                        logger.debug(f'Skipping {file_path} (no existing XMP file in recalculate mode).')
+                    else:
+                        if from_track:
+                            logger.info(f"Recovered creation date from track metadata for {file_path}")
+                        with open(f'{file_path}.xmp', 'w') as f:
+                            logger.info(f"Writing XMP Date file: {file_path}.xmp")
+                            f.write(xmp(file_creation_date, None))
+                        processed_files.append(file_path)
                 else:
-                    if from_track:
-                        logger.info(f"Recovered creation date from track metadata for {file_path}")
-                    with open(f'{file_path}.xmp', 'w') as f:
-                        logger.info(f"Writing XMP Date file: {file_path}.xmp")
-                        f.write(xmp(file_creation_date, None))
-                    processed_files.append(file_path)
-            else:
-                logger.warning(f'No creation date found in {file_path}, skipping.')
+                    logger.warning(f'No creation date found in {file_path}, skipping.')
     
     print(f"Complete.\nWrote {len(processed_files)} XMP files in {args.dir}.")
 
