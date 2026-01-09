@@ -27,6 +27,23 @@ def exif_tool(file_path: str, tags: list) -> dict[str, str]:
     metadata.pop('SourceFile')
     return metadata
 
+def get_creation_date(metadata: dict[str, str]) -> tuple[str|None, bool]:
+    """Extract creation date from metadata, trying standard fields first, then track-level fields.
+    Returns tuple of (date, was_found_in_track)
+    """
+    # Try standard EXIF/XMP dates first
+    creation_date = metadata.get('DateTimeOriginal', metadata.get('CreateDate', metadata.get('DateCreated')))
+    if creation_date:
+        return creation_date, False
+    
+    # Fall back to Media Create Date
+    if 'MediaCreateDate' in metadata:
+        return metadata['MediaCreateDate'], True
+    # Fall back to Track Create Date
+    if 'TrackCreateDate' in metadata:
+        return metadata['TrackCreateDate'], True
+    return None, False
+
 def xmp(creation_date: datetime|None, content_id: str|None) -> str:
     result = "<?xpacket begin='\ufeff' id='W5M0MpCehiHzreSzNTczkc9d'?>\n" \
              "<x:xmpmeta xmlns:x='adobe:ns:meta/' x:xmptk='Image::ExifTool 12.99'>\n" \
@@ -59,6 +76,7 @@ def main() -> None:
                     description='This tool will create an XMP file for a given video file with the creation date of the video file.')
     parser.add_argument('dir', metavar='dir', type=str, help='The directory containing media files.')
     parser.add_argument('-f', '--force', action='store_true', help='Force the creation of XMP files even if they already exist.')
+    parser.add_argument('-r', '--recalculate', action='store_true', help='Only regenerate XMP files for media that already has XMP files.')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging.')
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug logging.')
     args = parser.parse_args()
@@ -100,10 +118,11 @@ def main() -> None:
             pair_creation_date = None
             pair_content_id = None
             skip = False
+            from_track = False
             for ext in exts:
                 file_path = f'{file}{ext}'
-                metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MakerNotes:ContentIdentifier'])
-                creation_date = metadata.get('DateTimeOriginal', metadata.get('CreateDate', metadata.get('DateCreated')))
+                metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MakerNotes:ContentIdentifier', 'MediaCreateDate', 'TrackCreateDate'])
+                creation_date, from_track = get_creation_date(metadata)
                 content_id = metadata.get('ContentIdentifier')
                 if creation_date:
                     pair_creation_date = datetime.fromisoformat(creation_date)
@@ -120,9 +139,16 @@ def main() -> None:
                         logger.info(f'Creating Missing Content ID for {file_path}.')
                         pair_content_id = str(uuid4())
             if not skip:
-                if not args.force and (isfile(f'{file}{exts[0]}.xmp' or isfile(f'{file}{exts[1]}.xmp'))):
+                has_xmp = isfile(f'{file}{exts[0]}.xmp') or isfile(f'{file}{exts[1]}.xmp')
+                should_process = args.force or (args.recalculate and has_xmp) or not has_xmp
+                
+                if not should_process:
                     logger.warning(f'XMP file already exists for pair {file}, skipping.')
+                elif args.recalculate and not has_xmp:
+                    logger.debug(f'Skipping pair {file} (no existing XMP file in recalculate mode).')
                 else:
+                    if from_track:
+                        logger.info(f"Recovered creation date from track metadata for {file}")
                     for ext in exts:
                         with open(f'{file}{ext}.xmp', 'w') as f:
                             logger.info(f"Writing XMP Content ID {'& Date' if pair_creation_date else ''} file: {file}{ext}.xmp")
@@ -130,29 +156,29 @@ def main() -> None:
                         processed_files.append(f'{file}{ext}')
 
     for file_path in file_paths:
-        metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate'])
-        creation_date = metadata.get('DateTimeOriginal', metadata.get('CreateDate', metadata.get('DateCreated')))
-        if creation_date:
-            recent_date = datetime.fromisoformat(creation_date)
-            break
-
-    if file_paths and not recent_date:
-        logger.warning("No creation date found in any media files. Unable to estimate creation date.")
-    else:
-        for file_path in file_paths:
-            if file_path not in processed_files:
-                metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate'])
-                creation_date = metadata.get('DateTimeOriginal', metadata.get('CreateDate', metadata.get('DateCreated')))
-                if creation_date:
-                    recent_date = datetime.fromisoformat(creation_date)
+        if file_path not in processed_files:
+            metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate'])
+            creation_date, from_track = get_creation_date(metadata)
+            
+            if creation_date:
+                file_creation_date = datetime.fromisoformat(creation_date)
+                root, ext = splitext(file_path)
+                has_xmp = isfile(f'{file_path}.xmp')
+                should_process = args.force or (args.recalculate and has_xmp) or not has_xmp
+                
+                if not should_process:
+                    logger.warning(f'XMP file already exists for file {file_path}, skipping.')
+                elif args.recalculate and not has_xmp:
+                    logger.debug(f'Skipping {file_path} (no existing XMP file in recalculate mode).')
                 else:
-                    if not args.force and (isfile(f'{file}{exts[0]}.xmp' or isfile(f'{file}{exts[1]}.xmp'))):
-                        logger.warning(f'XMP file already exists for file {file}, skipping.')
-                    else:
-                        with open(f'{file_path}.xmp', 'w') as f:
-                            logger.info(f"Writing XMP Date file: {file_path}.xmp")
-                            f.write(xmp(recent_date, None))
-                        processed_files.append(file_path)
+                    if from_track:
+                        logger.info(f"Recovered creation date from track metadata for {file_path}")
+                    with open(f'{file_path}.xmp', 'w') as f:
+                        logger.info(f"Writing XMP Date file: {file_path}.xmp")
+                        f.write(xmp(file_creation_date, None))
+                    processed_files.append(file_path)
+            else:
+                logger.warning(f'No creation date found in {file_path}, skipping.')
     
     print(f"Complete.\nWrote {len(processed_files)} XMP files in {args.dir}.")
 
