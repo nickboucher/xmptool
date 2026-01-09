@@ -13,16 +13,17 @@ Date/time metadata is inferred from surrounding files in the directory containin
 ## Usage
 
 ```
-xmptool [-h] [-f] [-v] [-d] dir
+xmptool [-h] [-f] [-r] [-v] [-d] dir
 
 positional arguments:
-  dir            The directory containing media files.
+  dir                The directory containing media files.
 
 options:
-  -h, --help     show this help message and exit
-  -f, --force    Force the creation of XMP files even if they already exist.
-  -v, --verbose  Enable verbose logging.
-  -d, --debug    Enable debug logging.
+  -h, --help         show this help message and exit
+  -f, --force        Force the creation of XMP files even if they already exist.
+  -r, --recalculate  Only regenerate XMP files for media that already has XMP files.
+  -v, --verbose      Enable verbose logging.
+  -d, --debug        Enable debug logging.
 ```
 
 ## Installation
