@@ -1,31 +1,48 @@
 # XMP Tool
 
-This tool will create an XMP sidecar file for any media files in a specified directory that are missing date/time metadata. It will also link "Live Photos" to their corresponding video files.
+> ⚠️ **Note:** Immich now reads deeply nested date/time metadata and correctly links Live Photos, so using `xmptool` is no longer required for the Google Photos → Immich workflow.
 
-This tool is designed for users of [immich](https://github.com/immich-app/immich), although it can also be used independently. The motivation for this tool is [Google Photos](https://photos.google.com/). When selecting "Download All" from an album in Google Photos, the resulting zip file:
+This tool creates XMP sidecar files to link Live Photos (pairing image and video) and — optionally — expose deepy-nested/undecteable datetime metadata. **Both features are optional** and are enabled via flags: `-l/--live-photos` (Live Photo linking) and `-t/--time` (date/time processing). While immich can now handle these cases automatically, `xmptool` provides a way to apply or audit these fixes manually; to run the tool you must specify at least one of these flags.
+
+The motivation for this tool is [Google Photos](https://photos.google.com/) — it's intended for users importing media into [immich](https://github.com/immich-app/immich) from Google Photos. When selecting "Download All" from an album in Google Photos, the resulting zip file:
 - Removes EXIF metadata from some media files, particularly videos.
 - Unlinks "Live Photos" from their corresponding video files by stripping key metadata.
 
-`xmptool` is designed to automatically correct these issues by bulk creating XMP sidecar files for media files missing date/time metadata and linking "Live Photos" to their corresponding video files.
+`xmptool` automatically corrects these issues by creating XMP sidecar files that link Live Photos to their corresponding video files and, when requested, expose date/time metadata.
 
-Date/time metadata is inferred from surrounding files in the directory containing this information. "Live Photos" without links to the corresponding video file are corrected by adding a Content Identifier to the XMP sidecar file. No changes are made to the original media files: all edits are stored a separate XMP sidecar files which are compatible with [immich](https://github.com/immich-app/immich).
+No changes are made to the original media files: all edits are stored in separate XMP sidecar files which are compatible with [immich](https://github.com/immich-app/immich).
 
 ## Usage
 
 ```
-xmptool [-h] [-f] [-r] [-s] [-v] [-d] dir
+usage: xmptool [-h] [-f] [-r] [-t] [-l] [-v] [-d] dir
+
+This tool creates XMP sidecar files to link Live Photos and optionally expose
+datetime metadata.
 
 positional arguments:
-  dir                 The directory containing media files.
+  path               The directory, single file, or glob pattern containing media files.
 
 options:
-  -h, --help          show this help message and exit
-  -f, --force         Force the creation of XMP files even if they already exist.
-  -r, --recalculate   Only regenerate XMP files for media that already has XMP files.
-  -s, --single-files  Process single files (non-Live Photos) to make date/time more discoverable by immich.
-  -v, --verbose       Enable verbose logging.
-  -d, --debug         Enable debug logging.
+  -h, --help         show this help message and exit
+  -f, --force        Force the creation of XMP files even if they already exist.
+  -r, --recalculate  Only regenerate XMP files for media that already has XMP
+                     files.
+  -v, --verbose      Enable verbose logging.
+  -d, --debug        Enable debug logging.
+
+required options:
+  At least one of the following must be specified
+
+  -t, --time         Process datetime metadata. (At least one of -l/--live-photos
+                     or -t/--time is required.)
+  -l, --live-photos  Process Live Photo content IDs (linking images to their
+                     corresponding videos). (At least one of -l/--live-photos or
+                     -t/--time is required.)
+
+Note: At least one of -l/--live-photos or -t/--time must be specified.
 ```
+
 
 ## Installation
 
