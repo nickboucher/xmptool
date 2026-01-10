@@ -2,7 +2,7 @@
 from datetime import datetime
 from argparse import ArgumentParser
 from sys import exit
-from os import walk
+from os import walk, remove
 from os.path import isfile, splitext, join, isdir
 from subprocess import run
 from json import loads
@@ -77,7 +77,7 @@ def main() -> None:
     parser.add_argument('dir', metavar='dir', type=str, help='The directory containing media files.')
     parser.add_argument('-f', '--force', action='store_true', help='Force the creation of XMP files even if they already exist.')
     parser.add_argument('-r', '--recalculate', action='store_true', help='Only regenerate XMP files for media that already has XMP files.')
-    parser.add_argument('-s', '--single-files', action='store_true', help='Process single files (non-Live Photos) to make date/time more discoverable by immich.')
+    parser.add_argument('-t', '--time', action='store_true', help='Process datetime metadata. If not passed, only content IDs for live photos will be processed.')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging.')
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug logging.')
     args = parser.parse_args()
@@ -120,19 +120,29 @@ def main() -> None:
             pair_content_id = None
             skip = False
             from_track = False
+            
+            # Build tag list based on flags
+            tags = ['MakerNotes:ContentIdentifier']
+            if args.time:
+                tags.extend(['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate'])
+            
             for ext in exts:
                 file_path = f'{file}{ext}'
-                metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MakerNotes:ContentIdentifier', 'MediaCreateDate', 'TrackCreateDate'])
-                creation_date, from_track = get_creation_date(metadata)
+                metadata = exif_tool(file_path, tags)
+                
+                # Only process datetime if --time flag is passed
+                if args.time:
+                    creation_date, from_track = get_creation_date(metadata)
+                    if creation_date:
+                        try:
+                            pair_creation_date = datetime.fromisoformat(creation_date)
+                        except ValueError:
+                            logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping date.')
+                            pair_creation_date = None
+                    else:
+                        logger.debug(f'No creation date in paired file {file_path}.')
+                
                 content_id = metadata.get('ContentIdentifier')
-                if creation_date:
-                    try:
-                        pair_creation_date = datetime.fromisoformat(creation_date)
-                    except ValueError:
-                        logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping date.')
-                        pair_creation_date = None
-                else:
-                    logger.debug(f'No creation date in paired file {file_path}.')
                 if content_id:
                     if pair_content_id and pair_content_id != content_id:
                         logger.warning(f'Content ID mismatch in {file_path}.')
@@ -143,16 +153,27 @@ def main() -> None:
                     if not pair_content_id:
                         logger.info(f'Creating Missing Content ID for {file_path}.')
                         pair_content_id = str(uuid4())
+            
             if not skip:
                 has_xmp = isfile(f'{file}{exts[0]}.xmp') or isfile(f'{file}{exts[1]}.xmp')
                 should_process = args.force or (args.recalculate and has_xmp) or not has_xmp
                 
-                if not should_process:
+                # Determine if we would write an XMP file (need content ID at minimum)
+                would_write_xmp = pair_content_id is not None
+                
+                # If in force or recalculate mode and we wouldn't write an XMP, delete existing ones
+                if (args.force or args.recalculate) and has_xmp and not would_write_xmp:
+                    for ext in exts:
+                        xmp_path = f'{file}{ext}.xmp'
+                        if isfile(xmp_path):
+                            logger.info(f'Deleting XMP file that would not be recreated: {xmp_path}')
+                            remove(xmp_path)
+                elif not should_process:
                     logger.warning(f'XMP file already exists for pair {file}, skipping.')
                 elif args.recalculate and not has_xmp:
                     logger.debug(f'Skipping pair {file} (no existing XMP file in recalculate mode).')
-                else:
-                    if from_track:
+                elif would_write_xmp:
+                    if from_track and args.time:
                         logger.info(f"Recovered creation date from track metadata for {file}")
                     for ext in exts:
                         with open(f'{file}{ext}.xmp', 'w') as f:
@@ -160,7 +181,8 @@ def main() -> None:
                             f.write(xmp(pair_creation_date, pair_content_id))
                         processed_files.append(f'{file}{ext}')
 
-    if args.single_files:
+    # Process single files (non-Live Photos) if --time flag is passed
+    if args.time:
         for file_path in file_paths:
             if file_path not in processed_files:
                 metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate'])
@@ -177,7 +199,11 @@ def main() -> None:
                     has_xmp = isfile(f'{file_path}.xmp')
                     should_process = args.force or (args.recalculate and has_xmp) or not has_xmp
                     
-                    if not should_process:
+                    # If in force or recalculate mode and we have no datetime, delete existing XMP
+                    if (args.force or args.recalculate) and has_xmp and not creation_date:
+                        logger.info(f'Deleting XMP file that would not be recreated: {file_path}.xmp')
+                        remove(f'{file_path}.xmp')
+                    elif not should_process:
                         logger.warning(f'XMP file already exists for file {file_path}, skipping.')
                     elif args.recalculate and not has_xmp:
                         logger.debug(f'Skipping {file_path} (no existing XMP file in recalculate mode).')
@@ -189,7 +215,13 @@ def main() -> None:
                             f.write(xmp(file_creation_date, None))
                         processed_files.append(file_path)
                 else:
-                    logger.warning(f'No creation date found in {file_path}, skipping.')
+                    # No creation date found - delete existing XMP if in force/recalculate mode
+                    has_xmp = isfile(f'{file_path}.xmp')
+                    if (args.force or args.recalculate) and has_xmp:
+                        logger.info(f'Deleting XMP file for file with no creation date: {file_path}.xmp')
+                        remove(f'{file_path}.xmp')
+                    else:
+                        logger.warning(f'No creation date found in {file_path}, skipping.')
     
     print(f"Complete.\nWrote {len(processed_files)} XMP files in {args.dir}.")
 
