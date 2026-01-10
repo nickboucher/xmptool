@@ -222,6 +222,16 @@ def main() -> None:
                         remove(f'{file_path}.xmp')
                     else:
                         logger.warning(f'No creation date found in {file_path}, skipping.')
+    else:
+        # If --time is NOT passed, delete XMP files for single files in force/recalculate mode
+        # since single files would not be processed without --time
+        if args.force or args.recalculate:
+            for file_path in file_paths:
+                if file_path not in processed_files:
+                    xmp_path = f'{file_path}.xmp'
+                    if isfile(xmp_path):
+                        logger.info(f'Deleting XMP file for single file (--time not passed): {xmp_path}')
+                        remove(xmp_path)
     
     print(f"Complete.\nWrote {len(processed_files)} XMP files in {args.dir}.")
 
