@@ -4,8 +4,8 @@ with open("README.md", "r") as f:
     long_description = f.read()
 
 setup(name='xmptool',
-        version='1.0',
-        description='Creates XMP sidecar files for media files in a directory missing date/time metadata.',
+        version='1.1',
+        description='Creates XMP sidecar files to link Live Photos and/or expose undetectable datetime metadata.',
         long_description=long_description,
         long_description_content_type="text/markdown",
         url='https://github.com/nickboucher/xmptool',
