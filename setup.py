@@ -5,7 +5,7 @@ with open("README.md", "r") as f:
 
 setup(name='xmptool',
         version='1.1',
-        description='Creates XMP sidecar files to link Live Photos (pairing image and video) and optionally expose hidden or undetectable date/time metadata.',
+        description='Creates XMP sidecar files to link Live Photos and/or expose undetectable datetime metadata.',
         long_description=long_description,
         long_description_content_type="text/markdown",
         url='https://github.com/nickboucher/xmptool',
