@@ -28,22 +28,25 @@ def exif_tool(file_path: str, tags: list) -> dict[str, str]:
     metadata.pop('SourceFile')
     return metadata
 
-def get_creation_date(metadata: dict[str, str]) -> tuple[str|None, bool]:
+def get_creation_date(metadata: dict[str, str]) -> tuple[str|None, bool, str|None]:
     """Extract creation date from metadata, trying standard fields first, then track-level fields.
-    Returns tuple of (date, was_found_in_track)
+    Returns tuple of (date, was_found_in_track, field_name)
     """
     # Try standard EXIF/XMP dates first
-    creation_date = metadata.get('DateTimeOriginal', metadata.get('CreateDate', metadata.get('DateCreated')))
-    if creation_date:
-        return creation_date, False
+    if 'DateTimeOriginal' in metadata:
+        return metadata['DateTimeOriginal'], False, 'DateTimeOriginal'
+    if 'CreateDate' in metadata:
+        return metadata['CreateDate'], False, 'CreateDate'
+    if 'DateCreated' in metadata:
+        return metadata['DateCreated'], False, 'DateCreated'
     
     # Fall back to Media Create Date
     if 'MediaCreateDate' in metadata:
-        return metadata['MediaCreateDate'], True
+        return metadata['MediaCreateDate'], True, 'MediaCreateDate'
     # Fall back to Track Create Date
     if 'TrackCreateDate' in metadata:
-        return metadata['TrackCreateDate'], True
-    return None, False
+        return metadata['TrackCreateDate'], True, 'TrackCreateDate'
+    return None, False, None
 
 def xmp(creation_date: datetime|None, content_id: str|None) -> str:
     result = "<?xpacket begin='\ufeff' id='W5M0MpCehiHzreSzNTczkc9d'?>\n" \
@@ -74,7 +77,7 @@ def xmp(creation_date: datetime|None, content_id: str|None) -> str:
 def main() -> None:
 
     parser = ArgumentParser(
-                    description='This tool creates XMP sidecar files to link Live Photos and optionally expose datetime metadata.',
+                    description='This tool creates XMP sidecar files to link Live Photos expose datetime metadata.',
                     epilog='Note: At least one of -l/--live-photos or -t/--time must be specified.')
     parser.add_argument('path', metavar='path', type=str, help='Directory, single file, or glob pattern containing media files.')
     parser.add_argument('-f', '--force', action='store_true', help='Force the creation of XMP files even if they already exist.')
@@ -145,6 +148,7 @@ def main() -> None:
             pair_content_id = None
             skip = False
             from_track = False
+            date_in_exif = False
             
             # Build tag list based on flags
             tags = []
@@ -159,13 +163,18 @@ def main() -> None:
                 
                 # Only process datetime if --time flag is passed
                 if args.time:
-                    creation_date, from_track = get_creation_date(metadata)
+                    creation_date, from_track, field_name = get_creation_date(metadata)
                     if creation_date:
-                        try:
-                            pair_creation_date = datetime.fromisoformat(creation_date)
-                        except ValueError:
-                            logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping date.')
+                        if field_name in ('DateTimeOriginal', 'CreateDate'):
+                            logger.debug(f'Datetime already exposed in EXIF ({field_name}) for {file_path}, skipping XMP creation for datetime.')
+                            date_in_exif = True
                             pair_creation_date = None
+                        else:
+                            try:
+                                pair_creation_date = datetime.fromisoformat(creation_date)
+                            except ValueError:
+                                logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping date.')
+                                pair_creation_date = None
                     else:
                         logger.debug(f'No creation date in paired file {file_path}.')
 
@@ -215,9 +224,14 @@ def main() -> None:
         for file_path in file_paths:
             if file_path not in processed_files:
                 metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate'])
-                creation_date, from_track = get_creation_date(metadata)
+                creation_date, from_track, field_name = get_creation_date(metadata)
                 
                 if creation_date:
+                    # Skip if datetime is already exposed in EXIF
+                    if field_name in ('DateTimeOriginal', 'CreateDate'):
+                        logger.debug(f'Datetime already exposed in EXIF ({field_name}) for {file_path}, skipping XMP creation.')
+                        continue
+                    
                     try:
                         file_creation_date = datetime.fromisoformat(creation_date)
                     except ValueError:

@@ -1,8 +1,6 @@
 # XMP Tool
 
-> ⚠️ **Note:** Immich now reads deeply nested date/time metadata and correctly links Live Photos, so using `xmptool` is no longer required for the Google Photos → Immich workflow.
-
-This tool creates XMP sidecar files to link Live Photos (pairing image and video) and — optionally — expose deepy-nested/undecteable datetime metadata. **Both features are optional** and are enabled via flags: `-l/--live-photos` (Live Photo linking) and `-t/--time` (date/time processing). While immich can now handle these cases automatically, `xmptool` provides a way to apply or audit these fixes manually; to run the tool you must specify at least one of these flags.
+This tool creates XMP sidecar files to link Live Photos (pairing image and video) and expose deepy-nested/undecteable/inferred datetime metadata. **Both features are optional** and are enabled via flags: `-l/--live-photos` (Live Photo linking) and `-t/--time` (date/time processing). While immich can now handle these cases automatically, `xmptool` provides a way to apply or audit these fixes manually; to run the tool you must specify at least one of these flags.
 
 The motivation for this tool is [Google Photos](https://photos.google.com/) — it's intended for users importing media into [immich](https://github.com/immich-app/immich) from Google Photos. When selecting "Download All" from an album in Google Photos, the resulting zip file:
 - Removes EXIF metadata from some media files, particularly videos.
