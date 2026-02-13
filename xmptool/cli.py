@@ -2,8 +2,8 @@
 from datetime import datetime
 from argparse import ArgumentParser
 from sys import exit
-from os import walk, remove
-from os.path import isfile, splitext, join, isdir, basename
+from os import walk, remove, listdir
+from os.path import isfile, splitext, join, isdir, basename, dirname
 from glob import glob
 from subprocess import run
 from json import loads
@@ -47,6 +47,46 @@ def get_creation_date(metadata: dict[str, str]) -> tuple[str|None, bool, str|Non
     if 'TrackCreateDate' in metadata:
         return metadata['TrackCreateDate'], True, 'TrackCreateDate'
     return None, False, None
+
+def find_nearest_datetime(file_path: str) -> tuple[datetime|None, str|None]:
+    """Find the nearest file in the same directory with a datetime.
+    Files are sorted alphabetically; preceding files are preferred over subsequent.
+    Returns (datetime, source_file_path) or (None, None).
+    """
+    dir_path = dirname(file_path) or '.'
+    target_name = basename(file_path)
+
+    # Collect all supported media files in the same directory (excluding the target)
+    siblings = []
+    for f in listdir(dir_path):
+        if f.lower().endswith(EXTs) and not f.startswith('._') and f != target_name:
+            siblings.append(f)
+    siblings.sort()
+
+    if not siblings:
+        return None, None
+
+    # Determine target's alphabetical position among all files
+    all_names = sorted(siblings + [target_name])
+    target_idx = all_names.index(target_name)
+
+    tags = ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated',
+            'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate']
+
+    # Search by increasing distance, preceding preferred on each step
+    for dist in range(1, len(all_names)):
+        for idx in (target_idx - dist, target_idx + dist):
+            if 0 <= idx < len(all_names):
+                candidate = join(dir_path, all_names[idx])
+                metadata = exif_tool(candidate, tags)
+                creation_date, _, _ = get_creation_date(metadata)
+                if creation_date:
+                    try:
+                        return datetime.fromisoformat(creation_date), candidate
+                    except ValueError:
+                        continue
+
+    return None, None
 
 def xmp(creation_date: datetime|None, content_id: str|None) -> str:
     result = "<?xpacket begin='\ufeff' id='W5M0MpCehiHzreSzNTczkc9d'?>\n" \
@@ -258,13 +298,29 @@ def main() -> None:
                             f.write(xmp(file_creation_date, None))
                         processed_files.append(file_path)
                 else:
-                    # No creation date found - delete existing XMP if in force/recalculate mode
-                    has_xmp = isfile(f'{file_path}.xmp')
-                    if (args.force or args.recalculate) and has_xmp:
-                        logger.info(f'Deleting XMP file for file with no creation date: {file_path}.xmp')
-                        remove(f'{file_path}.xmp')
+                    # No creation date found - try to infer from nearest file in the same directory
+                    inferred_date, source_file = find_nearest_datetime(file_path)
+                    if inferred_date:
+                        logger.info(f'Inferred creation date from {source_file} for {file_path}.')
+                        has_xmp = isfile(f'{file_path}.xmp')
+                        should_process = args.force or (args.recalculate and has_xmp) or not has_xmp
+
+                        if not should_process:
+                            logger.warning(f'XMP file already exists for file {file_path}, skipping.')
+                        elif args.recalculate and not has_xmp:
+                            logger.debug(f'Skipping {file_path} (no existing XMP file in recalculate mode).')
+                        else:
+                            with open(f'{file_path}.xmp', 'w') as f:
+                                logger.info(f"Writing XMP Date file: {file_path}.xmp")
+                                f.write(xmp(inferred_date, None))
+                            processed_files.append(file_path)
                     else:
-                        logger.warning(f'No creation date found in {file_path}, skipping.')
+                        has_xmp = isfile(f'{file_path}.xmp')
+                        if (args.force or args.recalculate) and has_xmp:
+                            logger.info(f'Deleting XMP file for file with no creation date: {file_path}.xmp')
+                            remove(f'{file_path}.xmp')
+                        else:
+                            logger.warning(f'No creation date could be inferred for {file_path}, skipping.')
     else:
         # If --time is NOT passed, delete XMP files for single files in force/recalculate mode
         # since single files would not be processed without --time
