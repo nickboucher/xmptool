@@ -13,30 +13,34 @@ No changes are made to the original media files: all edits are stored in separat
 ## Usage
 
 ```
-usage: xmptool [-h] [-f] [-r] [-t] [-l] [-v] [-d] dir
+usage: xmptool [-h] [-f] [-r] [-t] [-l] [-i DATETIME] [-o] [-v] [-d] path
 
-This tool creates XMP sidecar files to link Live Photos and optionally expose
-datetime metadata.
+This tool creates XMP sidecar files to link Live Photos expose datetime metadata.
 
 positional arguments:
-  path               The directory, single file, or glob pattern containing media files.
+  path                Directory, single file, or glob pattern containing media
+                      files.
 
 options:
-  -h, --help         show this help message and exit
-  -f, --force        Force the creation of XMP files even if they already exist.
-  -r, --recalculate  Only regenerate XMP files for media that already has XMP
-                     files.
-  -v, --verbose      Enable verbose logging.
-  -d, --debug        Enable debug logging.
+  -h, --help          show this help message and exit
+  -f, --force         Force the creation of XMP files even if they already exist.
+  -r, --recalculate   Only regenerate XMP files for media that already has XMP
+                      files.
+  -i, --iso DATETIME  Use the given ISO-format datetime instead of extracting from
+                      file metadata. Requires -t/--time.
+  -o, --override      Force XMP creation even if datetime is already embedded in the
+                      file. Requires -t/--time.
+  -v, --verbose       Enable verbose logging.
+  -d, --debug         Enable debug logging.
 
 required options:
   At least one of the following must be specified
 
-  -t, --time         Process datetime metadata. (At least one of -l/--live-photos
-                     or -t/--time is required.)
-  -l, --live-photos  Process Live Photo content IDs (linking images to their
-                     corresponding videos). (At least one of -l/--live-photos or
-                     -t/--time is required.)
+  -t, --time          Process datetime metadata. (At least one of -l/--live-photos
+                      or -t/--time is required.)
+  -l, --live-photos   Process Live Photo content IDs (linking images to their
+                      corresponding videos). (At least one of -l/--live-photos or
+                      -t/--time is required.)
 
 Note: At least one of -l/--live-photos or -t/--time must be specified.
 ```

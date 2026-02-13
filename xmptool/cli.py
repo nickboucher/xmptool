@@ -128,6 +128,8 @@ def main() -> None:
     req_group.add_argument('-t', '--time', action='store_true', dest='time', help='Process datetime metadata. (At least one of -l/--live-photos or -t/--time is required.)')
     req_group.add_argument('-l', '--live-photos', action='store_true', dest='live_photos', help='Process Live Photo content IDs (linking images to their corresponding videos). (At least one of -l/--live-photos or -t/--time is required.)')
 
+    parser.add_argument('-i', '--iso', type=str, dest='iso', metavar='DATETIME', help='Use the given ISO-format datetime instead of extracting from file metadata. Requires -t/--time.')
+    parser.add_argument('-o', '--override', action='store_true', dest='override', help='Force XMP creation even if datetime is already embedded in the file. Requires -t/--time.')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging.')
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug logging.')
     args = parser.parse_args()
@@ -135,6 +137,20 @@ def main() -> None:
     # Require at least one of --time or --live-photos
     if not (args.time or args.live_photos):
         parser.error('At least one of -l/--live-photos or -t/--time must be specified.')
+
+    # --iso and --override require --time
+    if args.iso and not args.time:
+        parser.error('-i/--iso requires -t/--time.')
+    if args.override and not args.time:
+        parser.error('-o/--override requires -t/--time.')
+
+    # Parse the --iso datetime upfront
+    iso_date = None
+    if args.iso:
+        try:
+            iso_date = datetime.fromisoformat(args.iso)
+        except ValueError:
+            parser.error(f'Invalid ISO datetime format: {args.iso}')
 
     handler = StreamHandler()
     handler.setFormatter(ColoredFormatter('%(log_color)s%(levelname)s: %(message)s'))
@@ -203,20 +219,25 @@ def main() -> None:
                 
                 # Only process datetime if --time flag is passed
                 if args.time:
-                    creation_date, from_track, field_name = get_creation_date(metadata)
-                    if creation_date:
-                        if field_name in ('DateTimeOriginal', 'CreateDate'):
-                            logger.debug(f'Datetime already exposed in EXIF ({field_name}) for {file_path}, skipping XMP creation for datetime.')
-                            date_in_exif = True
-                            pair_creation_date = None
-                        else:
-                            try:
-                                pair_creation_date = datetime.fromisoformat(creation_date)
-                            except ValueError:
-                                logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping date.')
-                                pair_creation_date = None
+                    if iso_date:
+                        pair_creation_date = iso_date
                     else:
-                        logger.debug(f'No creation date in paired file {file_path}.')
+                        creation_date, from_track, field_name = get_creation_date(metadata)
+                        if creation_date:
+                            if field_name in ('DateTimeOriginal', 'CreateDate') and not args.override:
+                                logger.debug(f'Datetime already exposed in EXIF ({field_name}) for {file_path}, skipping XMP creation for datetime.')
+                                date_in_exif = True
+                                pair_creation_date = None
+                            else:
+                                if field_name in ('DateTimeOriginal', 'CreateDate') and args.override:
+                                    logger.info(f'Overriding existing EXIF datetime ({field_name}) for {file_path}.')
+                                try:
+                                    pair_creation_date = datetime.fromisoformat(creation_date)
+                                except ValueError:
+                                    logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping date.')
+                                    pair_creation_date = None
+                        else:
+                            logger.debug(f'No creation date in paired file {file_path}.')
 
                 # Only process ContentIdentifier if live photos flag is passed
                 if args.live_photos:
@@ -263,64 +284,58 @@ def main() -> None:
     if args.time:
         for file_path in file_paths:
             if file_path not in processed_files:
-                metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate'])
-                creation_date, from_track, field_name = get_creation_date(metadata)
-                
-                if creation_date:
-                    # Skip if datetime is already exposed in EXIF
-                    if field_name in ('DateTimeOriginal', 'CreateDate'):
-                        logger.debug(f'Datetime already exposed in EXIF ({field_name}) for {file_path}, skipping XMP creation.')
-                        continue
-                    
-                    try:
-                        file_creation_date = datetime.fromisoformat(creation_date)
-                    except ValueError:
-                        logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping.')
-                        continue
-                    
-                    root, ext = splitext(file_path)
-                    has_xmp = isfile(f'{file_path}.xmp')
-                    should_process = args.force or (args.recalculate and has_xmp) or not has_xmp
-                    
-                    # If in force or recalculate mode and we have no datetime, delete existing XMP
-                    if (args.force or args.recalculate) and has_xmp and not creation_date:
-                        logger.info(f'Deleting XMP file that would not be recreated: {file_path}.xmp')
-                        remove(f'{file_path}.xmp')
-                    elif not should_process:
-                        logger.warning(f'XMP file already exists for file {file_path}, skipping.')
-                    elif args.recalculate and not has_xmp:
-                        logger.debug(f'Skipping {file_path} (no existing XMP file in recalculate mode).')
-                    else:
-                        if from_track:
-                            logger.info(f"Recovered creation date from track metadata for {file_path}")
-                        with open(f'{file_path}.xmp', 'w') as f:
-                            logger.info(f"Writing XMP Date file: {file_path}.xmp")
-                            f.write(xmp(file_creation_date, None))
-                        processed_files.append(file_path)
+                # If --iso is given, use that datetime directly
+                if iso_date:
+                    file_creation_date = iso_date
+                    from_track = False
                 else:
-                    # No creation date found - try to infer from nearest file in the same directory
-                    inferred_date, source_file = find_nearest_datetime(file_path)
-                    if inferred_date:
-                        logger.info(f'Inferred creation date from {source_file} for {file_path}.')
-                        has_xmp = isfile(f'{file_path}.xmp')
-                        should_process = args.force or (args.recalculate and has_xmp) or not has_xmp
-
-                        if not should_process:
-                            logger.warning(f'XMP file already exists for file {file_path}, skipping.')
-                        elif args.recalculate and not has_xmp:
-                            logger.debug(f'Skipping {file_path} (no existing XMP file in recalculate mode).')
-                        else:
-                            with open(f'{file_path}.xmp', 'w') as f:
-                                logger.info(f"Writing XMP Date file: {file_path}.xmp")
-                                f.write(xmp(inferred_date, None))
-                            processed_files.append(file_path)
+                    metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate'])
+                    creation_date, from_track, field_name = get_creation_date(metadata)
+                    file_creation_date = None
+                    
+                    if creation_date:
+                        # Skip if datetime is already exposed in EXIF (unless --override)
+                        if field_name in ('DateTimeOriginal', 'CreateDate') and not args.override:
+                            logger.debug(f'Datetime already exposed in EXIF ({field_name}) for {file_path}, skipping XMP creation.')
+                            continue
+                        if field_name in ('DateTimeOriginal', 'CreateDate') and args.override:
+                            logger.info(f'Overriding existing EXIF datetime ({field_name}) for {file_path}.')
+                        
+                        try:
+                            file_creation_date = datetime.fromisoformat(creation_date)
+                        except ValueError:
+                            logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping.')
+                            continue
                     else:
-                        has_xmp = isfile(f'{file_path}.xmp')
-                        if (args.force or args.recalculate) and has_xmp:
-                            logger.info(f'Deleting XMP file for file with no creation date: {file_path}.xmp')
-                            remove(f'{file_path}.xmp')
+                        # No creation date found - try to infer from nearest file in the same directory
+                        inferred_date, source_file = find_nearest_datetime(file_path)
+                        if inferred_date:
+                            logger.info(f'Inferred creation date from {source_file} for {file_path}.')
+                            file_creation_date = inferred_date
                         else:
-                            logger.warning(f'No creation date could be inferred for {file_path}, skipping.')
+                            has_xmp = isfile(f'{file_path}.xmp')
+                            if (args.force or args.recalculate) and has_xmp:
+                                logger.info(f'Deleting XMP file for file with no creation date: {file_path}.xmp')
+                                remove(f'{file_path}.xmp')
+                            else:
+                                logger.warning(f'No creation date could be inferred for {file_path}, skipping.')
+                            continue
+
+                root, ext = splitext(file_path)
+                has_xmp = isfile(f'{file_path}.xmp')
+                should_process = args.force or (args.recalculate and has_xmp) or not has_xmp
+                
+                if not should_process:
+                    logger.warning(f'XMP file already exists for file {file_path}, skipping.')
+                elif args.recalculate and not has_xmp:
+                    logger.debug(f'Skipping {file_path} (no existing XMP file in recalculate mode).')
+                else:
+                    if from_track:
+                        logger.info(f"Recovered creation date from track metadata for {file_path}")
+                    with open(f'{file_path}.xmp', 'w') as f:
+                        logger.info(f"Writing XMP Date file: {file_path}.xmp")
+                        f.write(xmp(file_creation_date, None))
+                    processed_files.append(file_path)
     else:
         # If --time is NOT passed, delete XMP files for single files in force/recalculate mode
         # since single files would not be processed without --time
