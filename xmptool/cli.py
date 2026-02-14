@@ -13,9 +13,19 @@ from colorlog import getLogger, StreamHandler, ColoredFormatter
 from packaging.version import Version, parse
 from send2trash import send2trash
 
-EXTs = ('mp4', 'mov', 'avi', 'jpg', 'jpeg', 'png', 'gif', 'tiff', 'tif', 'webp', 'heic', 'heif')
+IMAGE_EXTs = ('jpg', 'jpeg', 'png', 'gif', 'tiff', 'tif', 'webp', 'heic', 'heif')
+VIDEO_EXTs = ('mp4', 'mov', 'avi')
+EXTs = IMAGE_EXTs + VIDEO_EXTs
 
 logger = getLogger(__name__)
+
+def is_image(file_path: str) -> bool:
+    """Check if a file path has an image extension."""
+    return file_path.lower().endswith(IMAGE_EXTs)
+
+def is_video(file_path: str) -> bool:
+    """Check if a file path has a video extension."""
+    return file_path.lower().endswith(VIDEO_EXTs)
 
 def exif_tool(file_path: str, tags: list) -> dict[str, str]:
     cmd = ['exiftool', '-json', '-d', '%Y-%m-%dT%H:%M:%S%:z']
@@ -89,29 +99,44 @@ def find_nearest_datetime(file_path: str) -> tuple[datetime|None, str|None]:
 
     return None, None
 
-def find_preview_groups(file_paths: list[str]) -> dict[str, list[str]]:
-    """Find groups of exactly 3 media files that share the same filename stem.
-    Returns a dict mapping the common stem to the list of full file paths.
+def find_preview_files(file_paths: list[str]) -> list[str]:
+    """Identify low-quality preview files from groups sharing the same filename stem.
+    Handles two cases:
+    - 2 files with same stem, both images: the smaller image is the preview.
+    - 3 files with same stem (2 images + 1 video): the smaller image is the preview.
+    Groups of 2 with one image + one video are Live Photo pairs, not previews.
+    Returns the list of preview file paths to recycle.
     """
     stem_map: dict[str, list[str]] = defaultdict(list)
     for fp in file_paths:
         root, _ = splitext(fp)
         stem_map[root].append(fp)
-    return {stem: paths for stem, paths in stem_map.items() if len(paths) == 3}
+    previews: list[str] = []
+    for stem, paths in stem_map.items():
+        images = [p for p in paths if is_image(p)]
+        videos = [p for p in paths if is_video(p)]
+        if len(paths) == 2 and len(images) == 2:
+            # Two images, no video: smaller is preview
+            smallest = min(images, key=lambda p: getsize(p))
+            previews.append(smallest)
+        elif len(paths) == 3 and len(images) == 2 and len(videos) == 1:
+            # Two images + one video: smaller image is preview
+            smallest = min(images, key=lambda p: getsize(p))
+            previews.append(smallest)
+    return previews
 
-def recycle_previews(file_paths: list[str]) -> list[str]:
-    """For each group of 3 media files with the same stem, identify
-    the smallest file (the low-quality preview) and send it to the
-    system recycling bin.
-    Returns the list of recycled file paths.
+def recycle_previews(preview_files: list[str], dry_run: bool = False) -> list[str]:
+    """Send preview files to the system recycling bin.
+    Returns the list of recycled (or would-be-recycled) file paths.
     """
-    groups = find_preview_groups(file_paths)
     recycled: list[str] = []
-    for stem, paths in groups.items():
-        smallest = min(paths, key=lambda p: getsize(p))
-        logger.warning(f'Recycling low-quality preview file: {smallest}')
-        send2trash(smallest)
-        recycled.append(smallest)
+    for fp in preview_files:
+        if dry_run:
+            logger.warning(f'Would recycle low-quality preview file: {fp}')
+        else:
+            logger.warning(f'Recycling low-quality preview file: {fp}')
+            send2trash(fp)
+        recycled.append(fp)
     return recycled
 
 def xmp(creation_date: datetime|None, content_id: str|None) -> str:
@@ -148,6 +173,7 @@ def main() -> None:
     parser.add_argument('path', metavar='path', type=str, help='Directory, single file, or glob pattern containing media files.')
     parser.add_argument('-f', '--force', action='store_true', help='Force the creation of XMP files even if they already exist.')
     parser.add_argument('-r', '--recalculate', action='store_true', help='Only regenerate XMP files for media that already has XMP files.')
+    parser.add_argument('-n', '--dry-run', action='store_true', dest='dry_run', help='Show what would be changed without making any modifications.')
 
     # Group the flags that are required as "at least one must be present" so help shows them together
     req_group = parser.add_argument_group('required options', 'At least one of the following must be specified')
@@ -182,7 +208,7 @@ def main() -> None:
     handler = StreamHandler()
     handler.setFormatter(ColoredFormatter('%(log_color)s%(levelname)s: %(message)s'))
     logger.addHandler(handler)
-    logger.setLevel('DEBUG' if args.debug else 'INFO' if args.verbose else 'WARNING')
+    logger.setLevel('DEBUG' if args.debug else 'INFO' if (args.verbose or args.dry_run) else 'WARNING')
 
     result = run(['exiftool', '-ver'], capture_output=True, text=True)
     if result.returncode != 0:
@@ -218,6 +244,27 @@ def main() -> None:
             exit(1)
     file_paths.sort()
 
+    # Identify and handle preview files before pair/single processing
+    recycled_files: list[str] = []
+    if args.previews:
+        if isfile(args.path):
+            # Single file: discover group from directory
+            dir_path = dirname(args.path) or '.'
+            target_stem, _ = splitext(args.path)
+            group_files = []
+            for f in listdir(dir_path):
+                full = join(dir_path, f)
+                stem, _ = splitext(full)
+                if stem == target_stem and isfile(full) and f.lower().endswith(EXTs) and not f.startswith('._'):
+                    group_files.append(full)
+            preview_files = find_preview_files(group_files)
+        else:
+            preview_files = find_preview_files(file_paths)
+        recycled_files = recycle_previews(preview_files, dry_run=args.dry_run)
+        # Remove recycled files from file_paths so they are not processed further
+        recycled_set = set(recycled_files)
+        file_paths = [fp for fp in file_paths if fp not in recycled_set]
+
     file_pairs = defaultdict(list)
     for file_path in file_paths:
         root, ext = splitext(file_path)
@@ -226,6 +273,11 @@ def main() -> None:
     processed_files = []
     for file, exts in file_pairs.items():
         if len(exts) == 2:
+            # Verify this is an image+video pair (not two images or two videos)
+            pair_files = [f'{file}{ext}' for ext in exts]
+            if not (any(is_image(f) for f in pair_files) and any(is_video(f) for f in pair_files)):
+                logger.debug(f"Skipping non-Live-Photo pair {file} (not an image+video combination).")
+                continue
             logger.debug(f"Processing file pair: {file}")
             pair_creation_date = None
             pair_content_id = None
@@ -292,8 +344,11 @@ def main() -> None:
                     for ext in exts:
                         xmp_path = f'{file}{ext}.xmp'
                         if isfile(xmp_path):
-                            logger.info(f'Deleting XMP file that would not be recreated: {xmp_path}')
-                            remove(xmp_path)
+                            if args.dry_run:
+                                logger.info(f'Would delete XMP file that would not be recreated: {xmp_path}')
+                            else:
+                                logger.info(f'Deleting XMP file that would not be recreated: {xmp_path}')
+                                remove(xmp_path)
                 elif not should_process:
                     logger.warning(f'XMP file already exists for pair {file}, skipping.')
                 elif args.recalculate and not has_xmp:
@@ -302,9 +357,12 @@ def main() -> None:
                     if from_track and args.time:
                         logger.info(f"Recovered creation date from track metadata for {file}")
                     for ext in exts:
-                        with open(f'{file}{ext}.xmp', 'w') as f:
-                            logger.info(f"Writing XMP Content ID {'& Date' if pair_creation_date else ''} file: {file}{ext}.xmp")
-                            f.write(xmp(pair_creation_date, pair_content_id if args.live_photos else None))
+                        if args.dry_run:
+                            logger.info(f"Would write XMP Content ID {'& Date' if pair_creation_date else ''} file: {file}{ext}.xmp")
+                        else:
+                            with open(f'{file}{ext}.xmp', 'w') as f:
+                                logger.info(f"Writing XMP Content ID {'& Date' if pair_creation_date else ''} file: {file}{ext}.xmp")
+                                f.write(xmp(pair_creation_date, pair_content_id if args.live_photos else None))
                         processed_files.append(f'{file}{ext}')
 
     # Process single files (non-Live Photos) if --time flag is passed
@@ -342,8 +400,11 @@ def main() -> None:
                         else:
                             has_xmp = isfile(f'{file_path}.xmp')
                             if (args.force or args.recalculate) and has_xmp:
-                                logger.info(f'Deleting XMP file for file with no creation date: {file_path}.xmp')
-                                remove(f'{file_path}.xmp')
+                                if args.dry_run:
+                                    logger.info(f'Would delete XMP file for file with no creation date: {file_path}.xmp')
+                                else:
+                                    logger.info(f'Deleting XMP file for file with no creation date: {file_path}.xmp')
+                                    remove(f'{file_path}.xmp')
                             else:
                                 logger.warning(f'No creation date could be inferred for {file_path}, skipping.')
                             continue
@@ -359,9 +420,12 @@ def main() -> None:
                 else:
                     if from_track:
                         logger.info(f"Recovered creation date from track metadata for {file_path}")
-                    with open(f'{file_path}.xmp', 'w') as f:
-                        logger.info(f"Writing XMP Date file: {file_path}.xmp")
-                        f.write(xmp(file_creation_date, None))
+                    if args.dry_run:
+                        logger.info(f"Would write XMP Date file: {file_path}.xmp")
+                    else:
+                        with open(f'{file_path}.xmp', 'w') as f:
+                            logger.info(f"Writing XMP Date file: {file_path}.xmp")
+                            f.write(xmp(file_creation_date, None))
                     processed_files.append(file_path)
     else:
         # If --time is NOT passed, delete XMP files for single files in force/recalculate mode
@@ -371,32 +435,18 @@ def main() -> None:
                 if file_path not in processed_files:
                     xmp_path = f'{file_path}.xmp'
                     if isfile(xmp_path):
-                        logger.info(f'Deleting XMP file for single file (--time not passed): {xmp_path}')
-                        remove(xmp_path)
+                        if args.dry_run:
+                            logger.info(f'Would delete XMP file for single file (--time not passed): {xmp_path}')
+                        else:
+                            logger.info(f'Deleting XMP file for single file (--time not passed): {xmp_path}')
+                            remove(xmp_path)
     
-    # Process preview removal if --previews flag is passed
-    recycled_files: list[str] = []
-    if args.previews:
-        # When a single file is specified, resolve the group from its directory
-        if isfile(args.path):
-            dir_path = dirname(args.path) or '.'
-            target_stem, _ = splitext(args.path)
-            group_files = []
-            for f in listdir(dir_path):
-                full = join(dir_path, f)
-                stem, _ = splitext(full)
-                if stem == target_stem and isfile(full) and f.lower().endswith(EXTs) and not f.startswith('._'):
-                    group_files.append(full)
-            if len(group_files) == 3:
-                recycled_files = recycle_previews(group_files)
-            else:
-                logger.debug(f'No preview group of 3 found for {args.path} (found {len(group_files)} files with same stem).')
-        else:
-            recycled_files = recycle_previews(file_paths)
-
-    print(f"Complete.\nWrote {len(processed_files)} XMP files for {args.path}.")
+    prefix = "Dry run complete" if args.dry_run else "Complete"
+    wrote_verb = "Would write" if args.dry_run else "Wrote"
+    recycled_verb = "Would recycle" if args.dry_run else "Recycled"
+    print(f"{prefix}.\n{wrote_verb} {len(processed_files)} XMP files for {args.path}.")
     if recycled_files:
-        print(f"Recycled {len(recycled_files)} low-quality preview files.")
+        print(f"{recycled_verb} {len(recycled_files)} low-quality preview files.")
 
 if __name__ == "__main__":
     main()
