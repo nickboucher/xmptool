@@ -3,7 +3,7 @@ from datetime import datetime
 from argparse import ArgumentParser
 from sys import exit
 from os import walk, remove, listdir
-from os.path import isfile, splitext, join, isdir, basename, dirname
+from os.path import isfile, splitext, join, isdir, basename, dirname, getsize
 from glob import glob
 from subprocess import run
 from json import loads
@@ -11,6 +11,7 @@ from collections import defaultdict
 from uuid import uuid4
 from colorlog import getLogger, StreamHandler, ColoredFormatter
 from packaging.version import Version, parse
+from send2trash import send2trash
 
 EXTs = ('mp4', 'mov', 'avi', 'jpg', 'jpeg', 'png', 'gif', 'tiff', 'tif', 'webp', 'heic', 'heif')
 
@@ -88,6 +89,31 @@ def find_nearest_datetime(file_path: str) -> tuple[datetime|None, str|None]:
 
     return None, None
 
+def find_preview_groups(file_paths: list[str]) -> dict[str, list[str]]:
+    """Find groups of exactly 3 media files that share the same filename stem.
+    Returns a dict mapping the common stem to the list of full file paths.
+    """
+    stem_map: dict[str, list[str]] = defaultdict(list)
+    for fp in file_paths:
+        root, _ = splitext(fp)
+        stem_map[root].append(fp)
+    return {stem: paths for stem, paths in stem_map.items() if len(paths) == 3}
+
+def recycle_previews(file_paths: list[str]) -> list[str]:
+    """For each group of 3 media files with the same stem, identify
+    the smallest file (the low-quality preview) and send it to the
+    system recycling bin.
+    Returns the list of recycled file paths.
+    """
+    groups = find_preview_groups(file_paths)
+    recycled: list[str] = []
+    for stem, paths in groups.items():
+        smallest = min(paths, key=lambda p: getsize(p))
+        logger.warning(f'Recycling low-quality preview file: {smallest}')
+        send2trash(smallest)
+        recycled.append(smallest)
+    return recycled
+
 def xmp(creation_date: datetime|None, content_id: str|None) -> str:
     result = "<?xpacket begin='\ufeff' id='W5M0MpCehiHzreSzNTczkc9d'?>\n" \
              "<x:xmpmeta xmlns:x='adobe:ns:meta/' x:xmptk='Image::ExifTool 12.99'>\n" \
@@ -118,15 +144,16 @@ def main() -> None:
 
     parser = ArgumentParser(
                     description='This tool creates XMP sidecar files to link Live Photos expose datetime metadata.',
-                    epilog='Note: At least one of -l/--live-photos or -t/--time must be specified.')
+                    epilog='Note: At least one of -l/--live-photos, -t/--time, or -p/--previews must be specified.')
     parser.add_argument('path', metavar='path', type=str, help='Directory, single file, or glob pattern containing media files.')
     parser.add_argument('-f', '--force', action='store_true', help='Force the creation of XMP files even if they already exist.')
     parser.add_argument('-r', '--recalculate', action='store_true', help='Only regenerate XMP files for media that already has XMP files.')
 
     # Group the flags that are required as "at least one must be present" so help shows them together
     req_group = parser.add_argument_group('required options', 'At least one of the following must be specified')
-    req_group.add_argument('-t', '--time', action='store_true', dest='time', help='Process datetime metadata. (At least one of -l/--live-photos or -t/--time is required.)')
-    req_group.add_argument('-l', '--live-photos', action='store_true', dest='live_photos', help='Process Live Photo content IDs (linking images to their corresponding videos). (At least one of -l/--live-photos or -t/--time is required.)')
+    req_group.add_argument('-t', '--time', action='store_true', dest='time', help='Process datetime metadata. (At least one of -l/--live-photos, -t/--time, or -p/--previews is required.)')
+    req_group.add_argument('-l', '--live-photos', action='store_true', dest='live_photos', help='Process Live Photo content IDs (linking images to their corresponding videos). (At least one of -l/--live-photos, -t/--time, or -p/--previews is required.)')
+    req_group.add_argument('-p', '--previews', action='store_true', dest='previews', help='Identify and recycle low-quality preview files. When three media files share the same filename stem, the smallest is sent to the system recycling bin. (At least one of -l/--live-photos, -t/--time, or -p/--previews is required.)')
 
     parser.add_argument('-i', '--iso', type=str, dest='iso', metavar='DATETIME', help='Use the given ISO-format datetime instead of extracting from file metadata. Requires -t/--time.')
     parser.add_argument('-o', '--override', action='store_true', dest='override', help='Force XMP creation even if datetime is already embedded in the file. Requires -t/--time.')
@@ -134,9 +161,9 @@ def main() -> None:
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug logging.')
     args = parser.parse_args()
 
-    # Require at least one of --time or --live-photos
-    if not (args.time or args.live_photos):
-        parser.error('At least one of -l/--live-photos or -t/--time must be specified.')
+    # Require at least one of --time, --live-photos, or --previews
+    if not (args.time or args.live_photos or args.previews):
+        parser.error('At least one of -l/--live-photos, -t/--time, or -p/--previews must be specified.')
 
     # --iso and --override require --time
     if args.iso and not args.time:
@@ -347,7 +374,29 @@ def main() -> None:
                         logger.info(f'Deleting XMP file for single file (--time not passed): {xmp_path}')
                         remove(xmp_path)
     
+    # Process preview removal if --previews flag is passed
+    recycled_files: list[str] = []
+    if args.previews:
+        # When a single file is specified, resolve the group from its directory
+        if isfile(args.path):
+            dir_path = dirname(args.path) or '.'
+            target_stem, _ = splitext(args.path)
+            group_files = []
+            for f in listdir(dir_path):
+                full = join(dir_path, f)
+                stem, _ = splitext(full)
+                if stem == target_stem and isfile(full) and f.lower().endswith(EXTs) and not f.startswith('._'):
+                    group_files.append(full)
+            if len(group_files) == 3:
+                recycled_files = recycle_previews(group_files)
+            else:
+                logger.debug(f'No preview group of 3 found for {args.path} (found {len(group_files)} files with same stem).')
+        else:
+            recycled_files = recycle_previews(file_paths)
+
     print(f"Complete.\nWrote {len(processed_files)} XMP files for {args.path}.")
+    if recycled_files:
+        print(f"Recycled {len(recycled_files)} low-quality preview files.")
 
 if __name__ == "__main__":
     main()

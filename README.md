@@ -1,10 +1,12 @@
 # XMP Tool
 
-This tool creates XMP sidecar files to link Live Photos (pairing image and video) and expose deepy-nested/undecteable/inferred datetime metadata. **Both features are optional** and are enabled via flags: `-l/--live-photos` (Live Photo linking) and `-t/--time` (date/time processing). While immich can now handle these cases automatically, `xmptool` provides a way to apply or audit these fixes manually; to run the tool you must specify at least one of these flags.
+This tool creates XMP sidecar files to link Live Photos (pairing image and video), expose deepy-nested/undecteable/inferred datetime metadata, and remove low-quality preview files. **All features are optional** and are enabled via flags: `-l/--live-photos` (Live Photo linking), `-t/--time` (date/time processing), and `-p/--previews` (preview file removal). While immich can now handle these cases automatically, `xmptool` provides a way to apply or audit these fixes manually; to run the tool you must specify at least one of these flags.
 
 The motivation for this tool is [Google Photos](https://photos.google.com/) — it's intended for users importing media into [immich](https://github.com/immich-app/immich) from Google Photos. When selecting "Download All" from an album in Google Photos, the resulting zip file:
 - Removes EXIF metadata from some media files, particularly videos.
 - Unlinks "Live Photos" from their corresponding video files by stripping key metadata.
+
+Recent versions of iOS save three files per photo: a full-quality image, a Live Photo video, and a low-quality preview image. The `-p/--previews` flag identifies groups of three media files sharing the same filename (but with different extensions), determines the smallest file in each group (the preview), and moves it to the system recycling bin so it can be recovered if needed.
 
 `xmptool` automatically corrects these issues by creating XMP sidecar files that link Live Photos to their corresponding video files and, when requested, expose date/time metadata.
 
@@ -13,7 +15,7 @@ No changes are made to the original media files: all edits are stored in separat
 ## Usage
 
 ```
-usage: xmptool [-h] [-f] [-r] [-t] [-l] [-i DATETIME] [-o] [-v] [-d] path
+usage: xmptool [-h] [-f] [-r] [-t] [-l] [-p] [-i DATETIME] [-o] [-v] [-d] path
 
 This tool creates XMP sidecar files to link Live Photos expose datetime metadata.
 
@@ -36,13 +38,17 @@ options:
 required options:
   At least one of the following must be specified
 
-  -t, --time          Process datetime metadata. (At least one of -l/--live-photos
-                      or -t/--time is required.)
+  -t, --time          Process datetime metadata. (At least one of -l/--live-photos,
+                      -t/--time, or -p/--previews is required.)
   -l, --live-photos   Process Live Photo content IDs (linking images to their
-                      corresponding videos). (At least one of -l/--live-photos or
-                      -t/--time is required.)
+                      corresponding videos). (At least one of -l/--live-photos,
+                      -t/--time, or -p/--previews is required.)
+  -p, --previews      Identify and recycle low-quality preview files. When three
+                      media files share the same filename stem, the smallest is sent
+                      to the system recycling bin. (At least one of -l/--live-photos,
+                      -t/--time, or -p/--previews is required.)
 
-Note: At least one of -l/--live-photos or -t/--time must be specified.
+Note: At least one of -l/--live-photos, -t/--time, or -p/--previews must be specified.
 ```
 
 
