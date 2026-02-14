@@ -323,15 +323,13 @@ def main() -> None:
                             if field_name in ('DateTimeOriginal', 'CreateDate') and not args.override:
                                 logger.debug(f'Datetime already exposed in EXIF ({field_name}) for {file_path}, skipping XMP creation for datetime.')
                                 date_in_exif = True
+                            if field_name in ('DateTimeOriginal', 'CreateDate') and args.override:
+                                logger.info(f'Overriding existing EXIF datetime ({field_name}) for {file_path}.')
+                            try:
+                                pair_creation_date = datetime.fromisoformat(creation_date)
+                            except ValueError:
+                                logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping date.')
                                 pair_creation_date = None
-                            else:
-                                if field_name in ('DateTimeOriginal', 'CreateDate') and args.override:
-                                    logger.info(f'Overriding existing EXIF datetime ({field_name}) for {file_path}.')
-                                try:
-                                    pair_creation_date = datetime.fromisoformat(creation_date)
-                                except ValueError:
-                                    logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping date.')
-                                    pair_creation_date = None
                             if is_image(file_path):
                                 photo_date_set = True
                         else:
