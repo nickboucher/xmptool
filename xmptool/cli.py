@@ -59,6 +59,17 @@ def get_creation_date(metadata: dict[str, str]) -> tuple[str|None, bool, str|Non
         return metadata['TrackCreateDate'], True, 'TrackCreateDate'
     return None, False, None
 
+def apply_timezone_offset(creation_date: str|None, metadata: dict[str, str]) -> str|None:
+    """Apply OffsetTimeOriginal timezone if the creation date lacks timezone info."""
+    if creation_date and 'OffsetTimeOriginal' in metadata:
+        try:
+            dt = datetime.fromisoformat(creation_date)
+            if dt.tzinfo is None:
+                return creation_date + metadata['OffsetTimeOriginal']
+        except ValueError:
+            pass
+    return creation_date
+
 def find_nearest_datetime(file_path: str) -> tuple[datetime|None, str|None]:
     """Find the nearest file in the same directory with a datetime.
     Files are sorted alphabetically; preceding files are preferred over subsequent.
@@ -82,7 +93,8 @@ def find_nearest_datetime(file_path: str) -> tuple[datetime|None, str|None]:
     target_idx = all_names.index(target_name)
 
     tags = ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated',
-            'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate']
+            'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate',
+            'EXIF:OffsetTimeOriginal']
 
     # Search by increasing distance, preceding preferred on each step
     for dist in range(1, len(all_names)):
@@ -91,6 +103,7 @@ def find_nearest_datetime(file_path: str) -> tuple[datetime|None, str|None]:
                 candidate = join(dir_path, all_names[idx])
                 metadata = exif_tool(candidate, tags)
                 creation_date, _, _ = get_creation_date(metadata)
+                creation_date = apply_timezone_offset(creation_date, metadata)
                 if creation_date:
                     try:
                         return datetime.fromisoformat(creation_date), candidate
@@ -284,13 +297,14 @@ def main() -> None:
             skip = False
             from_track = False
             date_in_exif = False
+            photo_date_set = False
             
             # Build tag list based on flags
             tags = []
             if args.live_photos:
                 tags.append('MakerNotes:ContentIdentifier')
             if args.time:
-                tags.extend(['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate'])
+                tags.extend(['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate', 'EXIF:OffsetTimeOriginal'])
             
             for ext in exts:
                 file_path = f'{file}{ext}'
@@ -300,8 +314,11 @@ def main() -> None:
                 if args.time:
                     if iso_date:
                         pair_creation_date = iso_date
+                    elif photo_date_set and is_video(file_path):
+                        logger.debug(f'Using photo datetime; ignoring video datetime for {file_path}.')
                     else:
                         creation_date, from_track, field_name = get_creation_date(metadata)
+                        creation_date = apply_timezone_offset(creation_date, metadata)
                         if creation_date:
                             if field_name in ('DateTimeOriginal', 'CreateDate') and not args.override:
                                 logger.debug(f'Datetime already exposed in EXIF ({field_name}) for {file_path}, skipping XMP creation for datetime.')
@@ -315,6 +332,8 @@ def main() -> None:
                                 except ValueError:
                                     logger.warning(f'Invalid creation date format "{creation_date}" in {file_path}, skipping date.')
                                     pair_creation_date = None
+                            if is_image(file_path):
+                                photo_date_set = True
                         else:
                             logger.debug(f'No creation date in paired file {file_path}.')
 
@@ -374,8 +393,9 @@ def main() -> None:
                     file_creation_date = iso_date
                     from_track = False
                 else:
-                    metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate'])
+                    metadata = exif_tool(file_path, ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'XMP:DateCreated', 'XMP:CreateDate', 'MediaCreateDate', 'TrackCreateDate', 'EXIF:OffsetTimeOriginal'])
                     creation_date, from_track, field_name = get_creation_date(metadata)
+                    creation_date = apply_timezone_offset(creation_date, metadata)
                     file_creation_date = None
                     
                     if creation_date:
@@ -395,7 +415,7 @@ def main() -> None:
                         # No creation date found - try to infer from nearest file in the same directory
                         inferred_date, source_file = find_nearest_datetime(file_path)
                         if inferred_date:
-                            logger.info(f'Inferred creation date from {source_file} for {file_path}.')
+                            logger.info(f'Inferred creation date {inferred_date.isoformat()} from {source_file} for {file_path}.')
                             file_creation_date = inferred_date
                         else:
                             has_xmp = isfile(f'{file_path}.xmp')
