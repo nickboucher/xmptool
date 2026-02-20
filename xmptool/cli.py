@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from argparse import ArgumentParser
 from sys import exit
 from os import walk, remove, listdir
@@ -111,6 +111,84 @@ def find_nearest_datetime(file_path: str) -> tuple[datetime|None, str|None]:
                         continue
 
     return None, None
+
+def find_nearest_timezone_offset(file_path: str) -> tuple[str|None, str|None]:
+    """Find the nearest timezone offset from sibling files in the same directory.
+    Files are sorted alphabetically; preceding files are preferred over subsequent.
+    Returns (offset_string like '+05:00', source_file_path) or (None, None).
+    """
+    dir_path = dirname(file_path) or '.'
+    target_name = basename(file_path)
+
+    siblings = []
+    for f in listdir(dir_path):
+        if f.lower().endswith(EXTs) and not f.startswith('._') and f != target_name:
+            siblings.append(f)
+    siblings.sort()
+
+    if not siblings:
+        return None, None
+
+    all_names = sorted(siblings + [target_name])
+    target_idx = all_names.index(target_name)
+
+    tags = ['EXIF:OffsetTimeOriginal', 'EXIF:DateTimeOriginal', 'EXIF:CreateDate',
+            'XMP:DateCreated', 'XMP:CreateDate']
+
+    for dist in range(1, len(all_names)):
+        for idx in (target_idx - dist, target_idx + dist):
+            if 0 <= idx < len(all_names):
+                candidate_path = join(dir_path, all_names[idx])
+                metadata = exif_tool(candidate_path, tags)
+
+                # Check OffsetTimeOriginal first
+                if 'OffsetTimeOriginal' in metadata:
+                    return metadata['OffsetTimeOriginal'], candidate_path
+
+                # Try to extract timezone from datetime fields
+                for field in ('DateTimeOriginal', 'CreateDate', 'DateCreated'):
+                    if field in metadata:
+                        try:
+                            dt = datetime.fromisoformat(metadata[field])
+                            if dt.tzinfo is not None:
+                                offset = dt.strftime('%z')
+                                # Format as ±HH:MM
+                                if len(offset) == 5:
+                                    offset = offset[:3] + ':' + offset[3:]
+                                return offset, candidate_path
+                        except ValueError:
+                            continue
+
+    return None, None
+
+def infer_and_apply_timezone(creation_date: str, file_path: str) -> str:
+    """If creation_date lacks timezone info, infer from neighboring files and apply.
+    The datetime is assumed to be in UTC when no timezone is present.
+    Returns the datetime string, potentially with inferred timezone applied.
+    """
+    try:
+        dt = datetime.fromisoformat(creation_date)
+    except ValueError:
+        return creation_date
+
+    if dt.tzinfo is not None:
+        return creation_date
+
+    offset_str, source_file = find_nearest_timezone_offset(file_path)
+    if offset_str:
+        logger.info(f'Timezone offset {offset_str} inferred from {source_file} for {file_path}.')
+        dt_utc = dt.replace(tzinfo=timezone.utc)
+        # Parse offset string to create target timezone
+        sign = 1 if offset_str[0] == '+' else -1
+        parts = offset_str.lstrip('+-').split(':')
+        hours = int(parts[0])
+        minutes = int(parts[1]) if len(parts) > 1 else 0
+        tz = timezone(timedelta(hours=sign * hours, minutes=sign * minutes))
+        dt_local = dt_utc.astimezone(tz)
+        return dt_local.isoformat()
+    else:
+        logger.warning(f'No timezone offset could be inferred for {file_path}.')
+        return creation_date
 
 def find_preview_files(file_paths: list[str]) -> list[str]:
     """Identify low-quality preview files from groups sharing the same filename stem.
@@ -320,6 +398,7 @@ def main() -> None:
                         creation_date, from_track, field_name = get_creation_date(metadata)
                         creation_date = apply_timezone_offset(creation_date, metadata)
                         if creation_date:
+                            creation_date = infer_and_apply_timezone(creation_date, file_path)
                             if field_name in ('DateTimeOriginal', 'CreateDate') and not args.override:
                                 logger.debug(f'Datetime already exposed in EXIF ({field_name}) for {file_path}, skipping XMP creation for datetime.')
                                 date_in_exif = True
@@ -397,6 +476,7 @@ def main() -> None:
                     file_creation_date = None
                     
                     if creation_date:
+                        creation_date = infer_and_apply_timezone(creation_date, file_path)
                         # Skip if datetime is already exposed in EXIF (unless --override)
                         if field_name in ('DateTimeOriginal', 'CreateDate') and not args.override:
                             logger.debug(f'Datetime already exposed in EXIF ({field_name}) for {file_path}, skipping XMP creation.')
