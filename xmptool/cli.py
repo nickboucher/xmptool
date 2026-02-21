@@ -28,7 +28,7 @@ def is_video(file_path: str) -> bool:
     return file_path.lower().endswith(VIDEO_EXTs)
 
 def exif_tool(file_path: str, tags: list) -> dict[str, str]:
-    cmd = ['exiftool', '-json', '-d', '%Y-%m-%dT%H:%M:%S%:z']
+    cmd = ['exiftool', '-json', '-d', '%Y-%m-%dT%H:%M:%S']
     cmd += [f'-{tag}' for tag in tags]
     cmd += [file_path]
     result = run(cmd, capture_output=True, text=True)
