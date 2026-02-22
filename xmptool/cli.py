@@ -27,6 +27,14 @@ def is_video(file_path: str) -> bool:
     """Check if a file path has a video extension."""
     return file_path.lower().endswith(VIDEO_EXTs)
 
+def is_heic(file_path: str) -> bool:
+    """Check if a file path has an HEIC/HEIF extension."""
+    return file_path.lower().endswith(('.heic', '.heif'))
+
+def is_jpeg(file_path: str) -> bool:
+    """Check if a file path has a JPEG/JPG extension."""
+    return file_path.lower().endswith(('.jpg', '.jpeg'))
+
 def exif_tool(file_path: str, tags: list) -> dict[str, str]:
     cmd = ['exiftool', '-json', '-d', '%Y-%m-%dT%H:%M:%S']
     cmd += [f'-{tag}' for tag in tags]
@@ -190,11 +198,37 @@ def infer_and_apply_timezone(creation_date: str, file_path: str) -> str:
         logger.warning(f'No timezone offset could be inferred for {file_path}.')
         return creation_date
 
+def select_preview_from_images(images: list[str]) -> str:
+    """Select which image file is the low-quality preview to recycle.
+
+    Special handling for HEIC+JPEG pairs: since HEIC is a more space-efficient
+    format, only recycle the HEIC if it is less than 0.75x the size of the JPEG.
+    Otherwise, recycle the JPEG (the less-efficient compatibility preview).
+
+    For other format combinations, the smallest image is the preview.
+    """
+    if len(images) == 2:
+        heic_files = [p for p in images if is_heic(p)]
+        jpeg_files = [p for p in images if is_jpeg(p)]
+        if len(heic_files) == 1 and len(jpeg_files) == 1:
+            heic_file = heic_files[0]
+            jpeg_file = jpeg_files[0]
+            heic_size = getsize(heic_file)
+            jpeg_size = getsize(jpeg_file)
+            # Only recycle HEIC if it's significantly smaller (< 75% of JPEG)
+            if heic_size < 0.75 * jpeg_size:
+                return heic_file
+            else:
+                return jpeg_file
+    # Default: smallest image is the preview
+    return min(images, key=lambda p: getsize(p))
+
 def find_preview_files(file_paths: list[str]) -> list[str]:
     """Identify low-quality preview files from groups sharing the same filename stem.
     Handles two cases:
-    - 2 files with same stem, both images: the smaller image is the preview.
-    - 3 files with same stem (2 images + 1 video): the smaller image is the preview.
+    - 2 files with same stem, both images: select preview using format-aware logic.
+    - 3 files with same stem (2 images + 1 video): select preview from images only
+      (the video is never recycled).
     Groups of 2 with one image + one video are Live Photo pairs, not previews.
     Returns the list of preview file paths to recycle.
     """
@@ -207,13 +241,13 @@ def find_preview_files(file_paths: list[str]) -> list[str]:
         images = [p for p in paths if is_image(p)]
         videos = [p for p in paths if is_video(p)]
         if len(paths) == 2 and len(images) == 2:
-            # Two images, no video: smaller is preview
-            smallest = min(images, key=lambda p: getsize(p))
-            previews.append(smallest)
+            # Two images, no video: select preview using format-aware logic
+            preview = select_preview_from_images(images)
+            previews.append(preview)
         elif len(paths) == 3 and len(images) == 2 and len(videos) == 1:
-            # Two images + one video: smaller image is preview
-            smallest = min(images, key=lambda p: getsize(p))
-            previews.append(smallest)
+            # Two images + one video: select preview from images only (never the video)
+            preview = select_preview_from_images(images)
+            previews.append(preview)
     return previews
 
 def recycle_previews(preview_files: list[str], dry_run: bool = False) -> list[str]:
